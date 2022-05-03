@@ -843,6 +843,187 @@ class DiceFocalLoss(_Loss):
         return total_loss
 
 
+
+class PolyLoss(_Loss):
+    def __init__(self,
+                 softmax: bool = False,
+                 reduction: Union[LossReduction, str] = LossReduction.MEAN,
+                 epsilon: float = 1.0,
+                 ) -> None:
+        super().__init__()
+        self.softmax = softmax
+        self.reduction = reduction
+        self.epsilon = epsilon
+        self.cross_entropy = nn.CrossEntropyLoss(reduction='none')
+
+    def forward(self, input: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            input: the shape should be BNH[WD], where N is the number of classes.
+                You can pass logits or probabilities as input, if pass logit, must set softmax=True
+            target: if target is in one-hot format, its shape should be BNH[WD],
+                if it is not one-hot encoded, it should has shape B1H[WD] or BH[WD], where N is the number of classes, 
+                It should contain binary values
+
+        Raises:
+            ValueError: When ``self.reduction`` is not one of ["mean", "sum", "none"].
+       """
+        if len(input.shape) - len(target.shape) == 1:
+            target = target.unsqueeze(1).long()
+        n_pred_ch, n_target_ch = input.shape[1], target.shape[1]
+        # target not in one-hot encode format, has shape B1H[WD]
+        if n_pred_ch != n_target_ch:
+            # squeeze out the channel dimension of size 1 to calculate ce loss
+            self.ce_loss = self.cross_entropy(input, torch.squeeze(target, dim=1).long())
+            # convert into one-hot format to calculate ce loss
+            target = one_hot(target, num_classes=n_pred_ch)
+        else:
+            # # target is in the one-hot format, convert to BH[WD] format to calculate ce loss
+            self.ce_loss = self.cross_entropy(input, torch.argmax(target, dim=1))
+
+        if self.softmax:
+            if n_pred_ch == 1:
+                warnings.warn("single channel prediction, `softmax=True` ignored.")
+            else:
+                input = torch.softmax(input, 1)
+
+        pt = (input * target).sum(dim=1)  # BH[WD]
+        poly_loss = self.ce_loss + self.epsilon * (1 - pt)
+
+        if self.reduction == LossReduction.MEAN.value:
+            polyl = torch.mean(poly_loss)  # the batch and channel average
+        elif self.reduction == LossReduction.SUM.value:
+            polyl = torch.sum(poly_loss)  # sum over the batch and channel dims
+        elif self.reduction == LossReduction.NONE.value:
+            # BH[WD] -> B1H[WD]
+            polyl = poly_loss.unsqueeze(1)
+        else:
+            raise ValueError(f'Unsupported reduction: {self.reduction}, available options are ["mean", "sum", "none"].')
+        return (polyl)
+
+class DicePolyLoss(_Loss):
+    """
+    Compute both Dice loss and Poly Loss, and return the weighted sum of these two losses.
+    The details of Dice loss is shown in ``monai.losses.DiceLoss``.
+    The details of Poly Loss is shown in ``monai.losses.PolyLoss``. In this implementation,
+    two deprecated parameters ``size_average`` and ``reduce``, and the parameter ``ignore_index`` are
+    not supported.
+
+    """
+
+    def __init__(
+        self,
+        include_background: bool = True,
+        to_onehot_y: bool = False,
+        sigmoid: bool = False,
+        softmax: bool = False,
+        other_act: Optional[Callable] = None,
+        squared_pred: bool = False,
+        jaccard: bool = False,
+        reduction: str = "mean",
+        smooth_nr: float = 1e-5,
+        smooth_dr: float = 1e-5,
+        batch: bool = False,
+        epsilon: float = 1.0,
+        lambda_dice: float = 1.0,
+        lambda_ce: float = 1.0,
+    ) -> None:
+        """
+        Args:
+            ``ce_weight`` are not supported here 
+            ```epsilon`` and `lambda_ce`` are only used for PolyLoss.
+            ``reduction`` is used for both losses and other parameters are only used for dice loss.
+
+            include_background: if False channel index 0 (background category) is excluded from the calculation.
+            to_onehot_y: whether to convert `y` into the one-hot format. Defaults to False.
+            sigmoid: if True, apply a sigmoid function to the prediction, only used by the `DiceLoss`,
+                don't need to specify activation function for `CrossEntropyLoss`.
+            softmax: if True, apply a softmax function to the prediction, only used by the `DiceLoss`,
+                don't need to specify activation function for `CrossEntropyLoss`.
+            other_act: if don't want to use `sigmoid` or `softmax`, use other callable function to execute
+                other activation layers, Defaults to ``None``. for example: `other_act = torch.tanh`.
+                only used by the `DiceLoss`, don't need to specify activation function for `CrossEntropyLoss`.
+            squared_pred: use squared versions of targets and predictions in the denominator or not.
+            jaccard: compute Jaccard Index (soft IoU) instead of dice or not.
+            reduction: {``"mean"``, ``"sum"``}
+                Specifies the reduction to apply to the output. Defaults to ``"mean"``. The dice loss should
+                as least reduce the spatial dimensions, which is different from cross entropy loss, thus here
+                the ``none`` option cannot be used.
+
+                - ``"mean"``: the sum of the output will be divided by the number of elements in the output.
+                - ``"sum"``: the output will be summed.
+
+            smooth_nr: a small constant added to the numerator to avoid zero.
+            smooth_dr: a small constant added to the denominator to avoid nan.
+            batch: whether to sum the intersection and union areas over the batch dimension before the dividing.
+                Defaults to False, a Dice loss value is computed independently from each item in the batch
+                before any `reduction`.
+            epsilon: the first polynomial coefficient in Poly Loss. This value should be adjusted for different
+                data and task.
+                Defaults to be 1.0.
+            lambda_dice: the trade-off weight value for dice loss. The value should be no less than 0.0.
+                Defaults to 1.0.
+            lambda_ce: the trade-off weight value for cross entropy loss. The value should be no less than 0.0.
+                Defaults to 1.0.
+
+        """
+        super().__init__()
+        reduction = look_up_option(reduction, DiceCEReduction).value
+        self.dice = DiceLoss(
+            include_background=include_background,
+            to_onehot_y=to_onehot_y,
+            sigmoid=sigmoid,
+            softmax=softmax,
+            other_act=other_act,
+            squared_pred=squared_pred,
+            jaccard=jaccard,
+            reduction=reduction,
+            smooth_nr=smooth_nr,
+            smooth_dr=smooth_dr,
+            batch=batch,
+        )
+        self.poly_loss = PolyLoss(softmax=softmax, reduction=reduction,epsilon=epsilon)
+        if lambda_dice < 0.0:
+            raise ValueError("lambda_dice should be no less than 0.0.")
+        if lambda_ce < 0.0:
+            raise ValueError("lambda_ce should be no less than 0.0.")
+        self.lambda_dice = lambda_dice
+        self.lambda_ce = lambda_ce
+
+    def forward(self, input: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            input: the shape should be BNH[WD].
+            target: the shape should be BNH[WD] or B1H[WD].
+
+        Raises:
+            ValueError: When number of dimensions for input and target are different.
+            ValueError: When number of channels for target is neither 1 nor the same as input.
+
+        """
+        if len(input.shape) != len(target.shape):
+            raise ValueError("the number of dimensions for input and target should be the same.")
+
+        dice_loss = self.dice(input, target)
+        ce_loss = self.poly_loss(input, target)
+        total_loss: torch.Tensor = self.lambda_dice * dice_loss + self.lambda_ce * ce_loss
+
+        return total_loss
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 Dice = DiceLoss
 dice_ce = DiceCELoss
 dice_focal = DiceFocalLoss
