@@ -19,6 +19,8 @@ from .dice import (
     GeneralizedDiceLoss,
     GeneralizedWassersteinDiceLoss,
     MaskedDiceLoss,
+    PolyLoss,
+    DicePolyLoss,
     dice_ce,
     dice_focal,
     generalized_dice,
