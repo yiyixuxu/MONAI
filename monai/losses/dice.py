@@ -990,7 +990,7 @@ class DicePolyLoss(_Loss):
             smooth_dr=smooth_dr,
             batch=batch,
         )
-        self.poly_loss = PolyLoss(softmax=softmax, reduction=reduction, espilons= epsilons)
+        self.poly_loss = PolyLoss(softmax=softmax, reduction=reduction, epsilons= epsilons)
         if lambda_dice < 0.0:
             raise ValueError("lambda_dice should be no less than 0.0.")
         if lambda_ce < 0.0:
