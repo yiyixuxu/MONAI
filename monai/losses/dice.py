@@ -848,12 +848,14 @@ class PolyLoss(_Loss):
     def __init__(self,
                  softmax: bool = False,
                  reduction: Union[LossReduction, str] = LossReduction.MEAN,
-                 epsilon: float = 1.0,
+                 epsilon1: float = 1.0,
+                 epsilon2: float = 0.,
                  ) -> None:
         super().__init__()
         self.softmax = softmax
         self.reduction = reduction
-        self.epsilon = epsilon
+        self.epsilon1 = epsilon1
+        self.epsilon2 = epsilon2
         self.cross_entropy = nn.CrossEntropyLoss(reduction='none')
 
     def forward(self, input: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
@@ -888,7 +890,7 @@ class PolyLoss(_Loss):
                 input = torch.softmax(input, 1)
 
         pt = (input * target).sum(dim=1)  # BH[WD]
-        poly_loss = self.ce_loss + self.epsilon * (1 - pt)
+        poly_loss = self.ce_loss + self.epsilon1 * (1 - pt) + self.epsilon2 * ((1-pt)**2)
 
         if self.reduction == LossReduction.MEAN.value:
             polyl = torch.mean(poly_loss)  # the batch and channel average
@@ -924,7 +926,8 @@ class DicePolyLoss(_Loss):
         smooth_nr: float = 1e-5,
         smooth_dr: float = 1e-5,
         batch: bool = False,
-        epsilon: float = 1.0,
+        epsilon1: float = 1.0,
+        epsilon2: float = 0.0,
         lambda_dice: float = 1.0,
         lambda_ce: float = 1.0,
     ) -> None:
@@ -982,7 +985,7 @@ class DicePolyLoss(_Loss):
             smooth_dr=smooth_dr,
             batch=batch,
         )
-        self.poly_loss = PolyLoss(softmax=softmax, reduction=reduction,epsilon=epsilon)
+        self.poly_loss = PolyLoss(softmax=softmax, reduction=reduction,epsilon1=epsilon1, epsilon2=epsilon2)
         if lambda_dice < 0.0:
             raise ValueError("lambda_dice should be no less than 0.0.")
         if lambda_ce < 0.0:
