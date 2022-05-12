@@ -848,14 +848,15 @@ class PolyLoss(_Loss):
     def __init__(self,
                  softmax: bool = False,
                  reduction: Union[LossReduction, str] = LossReduction.MEAN,
-                 epsilon1: float = 1.0,
-                 epsilon2: float = 0.,
+                 epsilons: float = 1.0,
                  ) -> None:
         super().__init__()
         self.softmax = softmax
         self.reduction = reduction
-        self.epsilon1 = epsilon1
-        self.epsilon2 = epsilon2
+        if isinstance(epsilons, list):
+            self.epsilons = epsilons
+        else:
+            self.epsilons = [epsilons]
         self.cross_entropy = nn.CrossEntropyLoss(reduction='none')
 
     def forward(self, input: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
@@ -890,7 +891,11 @@ class PolyLoss(_Loss):
                 input = torch.softmax(input, 1)
 
         pt = (input * target).sum(dim=1)  # BH[WD]
-        poly_loss = self.ce_loss + self.epsilon1 * (1 - pt) + self.epsilon2 * ((1-pt)**2)
+        poly_base = 1
+        poly_loss = self.ce_loss
+        for epsilon in self.epsilons:
+            poly_base = poly_base * (1-pt)
+            poly_loss += epsilon * poly_base
 
         if self.reduction == LossReduction.MEAN.value:
             polyl = torch.mean(poly_loss)  # the batch and channel average
@@ -926,15 +931,14 @@ class DicePolyLoss(_Loss):
         smooth_nr: float = 1e-5,
         smooth_dr: float = 1e-5,
         batch: bool = False,
-        epsilon1: float = 1.0,
-        epsilon2: float = 0.0,
+        epsilons: float = 1.0,
         lambda_dice: float = 1.0,
         lambda_ce: float = 1.0,
     ) -> None:
         """
         Args:
             ``ce_weight`` are not supported here 
-            ```epsilon`` and `lambda_ce`` are only used for PolyLoss.
+            ```epsilon`s` and `lambda_ce`` are only used for PolyLoss.
             ``reduction`` is used for both losses and other parameters are only used for dice loss.
 
             include_background: if False channel index 0 (background category) is excluded from the calculation.
@@ -961,9 +965,10 @@ class DicePolyLoss(_Loss):
             batch: whether to sum the intersection and union areas over the batch dimension before the dividing.
                 Defaults to False, a Dice loss value is computed independently from each item in the batch
                 before any `reduction`.
-            epsilon: the first polynomial coefficient in Poly Loss. This value should be adjusted for different
+            epsilons: if you pass a float, it will be the first polynomial coefficient in Poly Loss. This value should be adjusted for different
                 data and task.
                 Defaults to be 1.0.
+                You can also pass a list of N floats for poly-N
             lambda_dice: the trade-off weight value for dice loss. The value should be no less than 0.0.
                 Defaults to 1.0.
             lambda_ce: the trade-off weight value for cross entropy loss. The value should be no less than 0.0.
@@ -985,7 +990,7 @@ class DicePolyLoss(_Loss):
             smooth_dr=smooth_dr,
             batch=batch,
         )
-        self.poly_loss = PolyLoss(softmax=softmax, reduction=reduction,epsilon1=epsilon1, epsilon2=epsilon2)
+        self.poly_loss = PolyLoss(softmax=softmax, reduction=reduction, espilons= epsilons)
         if lambda_dice < 0.0:
             raise ValueError("lambda_dice should be no less than 0.0.")
         if lambda_ce < 0.0:
